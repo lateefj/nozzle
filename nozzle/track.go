@@ -8,7 +8,7 @@ import (
 
 const (
 	MinResponseTimes = 10
-	MaxResponseTimes = 100
+	MaxResponseTimes = 1000
 )
 
 type responseTimes struct {
@@ -23,6 +23,9 @@ func (rt *responseTimes) Average() float64 {
 	total := 0
 	for _, v := range rt.Times {
 		total += v
+	}
+	if total == 0 {
+		return 0
 	}
 	return float64(total) / float64(len(rt.Times))
 }
@@ -40,13 +43,13 @@ func NewTracker() *Tracker {
 // Provides read locks around the map
 func (t *Tracker) lookupTimes(r string) (*responseTimes, bool) {
 	t.mutex.RLock()
-	defer t.mutex.Unlock()
+	defer t.mutex.RUnlock()
 	rt, ok := t.times[r]
 	return rt, ok
 }
 
 // Gets the average response times for a key
-func (t *Tracker) Average(r string) (bool, float64) {
+func (t *Tracker) Average(r string) (float64, bool) {
 	ready := false
 	average := float64(0)
 	rTimes, ok := t.lookupTimes(r)
@@ -54,9 +57,9 @@ func (t *Tracker) Average(r string) (bool, float64) {
 		rTimes.Mutex.RLock()
 		ready = rTimes.Ready
 		average = rTimes.Average()
-		rTimes.Mutex.Unlock()
+		rTimes.Mutex.RUnlock()
 	}
-	return ready, average
+	return average, ready
 }
 
 // Add a response time to a key
@@ -64,7 +67,7 @@ func (t *Tracker) AddResponse(r string, rt int) {
 	rTimes, ok := t.lookupTimes(r)
 	// If can't find the reponse times then create a new one for this
 	if !ok {
-		rTimes = &responseTimes{Times: make([]int, MaxResponseTimes), Index: 0, Ready: false, LastUpdate: int64(0)}
+		rTimes = &responseTimes{Times: make([]int, 0), Index: 0, Ready: false, LastUpdate: int64(0), Mutex: &sync.RWMutex{}}
 		// Set a response time for a specific key
 		t.mutex.Lock()
 		t.times[r] = rTimes
@@ -74,12 +77,16 @@ func (t *Tracker) AddResponse(r string, rt int) {
 	rTimes.Mutex.Lock()
 	defer rTimes.Mutex.Unlock()
 	// Store the time
-	rTimes.Times[rTimes.Index] = rt
+	if len(rTimes.Times) < MaxResponseTimes {
+		rTimes.Times = append(rTimes.Times, rt)
+	} else {
+		rTimes.Times[rTimes.Index] = rt
+	}
 
 	// Track the last time the response time was updated
 	rTimes.LastUpdate = time.Now().UnixNano()
 	// Set the response time ready if at min number
-	if len(rTimes.Times) > MinResponseTimes {
+	if rTimes.Index >= MinResponseTimes-1 {
 		rTimes.Ready = true
 	}
 	// Increment the index
